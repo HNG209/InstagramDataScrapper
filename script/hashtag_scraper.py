@@ -9,6 +9,10 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 import pickle
+import random
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
+
 
 # Tải thông tin từ file .env
 load_dotenv()
@@ -74,7 +78,7 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
             EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/p/')]"))
         )
         first_post.click()
-        time.sleep(2)
+        random_delay()
 
         # Tìm username trong modal bài viết
         user_elem = WebDriverWait(driver, 10).until(
@@ -90,6 +94,21 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
             )
             gui_progress_var.set((len(usernames) / MAX_USERS) * 100)
 
+            # Mô phỏng việc click vào username và chuyển sang tab mới
+            action = ActionChains(driver)
+            action.key_down(Keys.CONTROL).click(user_elem).key_up(Keys.CONTROL).perform()
+            driver.switch_to.window(driver.window_handles[-1])  # Chuyển tới tab mới
+            random_delay()
+
+            # Lấy thông tin người dùng từ tab mới
+            user_info = get_user_info(driver)
+            if user_info:
+                print(user_info)
+
+            # Đóng tab và chuyển về tab gốc
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
+
         # Click nút mũi tên sang phải, trường hợp bài viết đầu tiên chỉ có 1 nút mũi tên
         next_button = WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable(
@@ -97,7 +116,7 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
             )
         )
         next_button.click()
-        time.sleep(2)
+        random_delay()
 
         while len(usernames) < MAX_USERS:
             if stop_requested:
@@ -119,6 +138,23 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
                     )
                     gui_progress_var.set((len(usernames) / MAX_USERS) * 100)
 
+                    # Mô phỏng việc click vào username và chuyển đến tab mới
+                    href = user_elem.get_attribute("href")
+                    # Mô phỏng CTRL + Click
+                    action = ActionChains(driver)
+                    action.key_down(Keys.CONTROL).click(user_elem).key_up(Keys.CONTROL).perform()
+                    driver.switch_to.window(driver.window_handles[-1])  # Chuyển tới tab mới
+                    random_delay()
+
+                    # Lấy thông tin người dùng từ tab mới
+                    user_info = get_user_info(driver)
+                    if user_info:
+                        print(user_info)
+
+                    # Đóng tab và chuyển về tab gốc
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[0])
+
                 # Lấy modal dialog chứa các nút
                 modal_xpath = "//div[@role='dialog']"
 
@@ -129,7 +165,7 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
                     )
                 )
                 next_button.click()
-                time.sleep(2)
+                random_delay()
 
             except Exception as e:
                 print(f"Không thể lấy thêm bài viết hoặc username: {e}")
@@ -144,6 +180,52 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
                 f.write(u + "\n")
         gui_progress_label.config(text=f"✅ Đã lưu {len(usernames)} username vào usernames.txt")
 
+# Thay thế các XPATH cũ bằng các XPATH mới được cung cấp
+def get_user_info(driver):
+    """Lấy thông tin người dùng từ trang hiện tại, bao gồm bio từ meta description."""
+
+    def convert_to_number(value):
+        """Chuyển chuỗi có K / M / B thành số thực."""
+        value = value.strip().replace(",", "")
+        if value.endswith("K"):
+            return int(float(value[:-1]) * 1000)
+        elif value.endswith("M"):
+            return int(float(value[:-1]) * 1000000)
+        elif value.endswith("B"):
+            return int(float(value[:-1]) * 1000000000)
+        else:
+            return int(value)
+
+    try:
+        # Lấy username và fullname từ title
+        og_title = driver.find_element(By.XPATH, "//meta[@property='og:title']").get_attribute("content")
+        fullname = og_title.split("(@")[0].strip()
+        username = og_title.split("(@")[1].split(")")[0].strip()
+
+        # Lấy thông tin số lượng bài post, followers và following từ description
+        og_description = driver.find_element(By.XPATH, "//meta[@property='og:description']").get_attribute("content")
+        details = og_description.split("-")[0].strip()
+
+        followers = convert_to_number(details.split("Followers")[0].strip())
+        following = convert_to_number(details.split("Followers")[1].split("Following")[0].strip())
+        posts = convert_to_number(details.split("Following")[1].split("Posts")[0].strip())
+
+        # Lấy bio từ meta[@name="description"]
+        bio_content = driver.find_element(By.XPATH, "//meta[@name='description']").get_attribute("content")
+        bio = bio_content.split("on Instagram:")[-1].strip()  # Lấy phần sau 'on Instagram:'
+
+        return {
+            "username": username,
+            "fullname": fullname,
+            "posts": posts,
+            "followers": followers,
+            "following": following,
+            "bio": bio,
+        }
+    except Exception as e:
+        print(f"Lỗi khi lấy thông tin người dùng: {e}")
+        return None
+
 
 def start_scraper(gui_progress_var, gui_progress_label):
     global driver, stop_requested
@@ -155,9 +237,9 @@ def start_scraper(gui_progress_var, gui_progress_label):
     driver = uc.Chrome(options=options)
     try:
         login(driver)
-        time.sleep(5)
+        random_delay()
         driver.get(f"https://www.instagram.com/explore/tags/{HASHTAG}/")
-        time.sleep(5)
+        random_delay()
 
         scroll_and_collect(gui_progress_var, gui_progress_label)
 
@@ -181,6 +263,11 @@ def normalize_url(url):
     if "/p/" in url:
         return url.split("/c/")[0]
     return url
+
+def random_delay():
+    """Hàm tạo độ trễ ngẫu nhiên trong khoảng từ 4 đến 7 giây."""
+    delay = random.uniform(1, 5)
+    time.sleep(delay)
 
 # Tạo giao diện chính với Tkinter
 def main():
