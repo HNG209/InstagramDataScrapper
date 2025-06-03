@@ -12,10 +12,41 @@ import pickle
 import random
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
+import cloudinary.uploader
+import json
+from pymongo import MongoClient
+import random
+import string
 
+# Import Cloudinary
+import cloudinary
 
 # Tải thông tin từ file .env
 load_dotenv()
+
+def generate_random_email():
+    """Tạo email ngẫu nhiên."""
+    domain = random.choice(["example.com", "test.com", "demo.com"])
+    username = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return f"{username}@{domain}"
+
+def generate_random_password():
+    """Tạo mật khẩu ngẫu nhiên."""
+    return "".join(random.choices(string.ascii_letters + string.digits, k=12))
+
+def generate_random_gender():
+    """Tạo giới tính ngẫu nhiên."""
+    return random.choice(["male", "female", "other"])
+
+MONGO_CONNECTION_STRING = os.getenv("MONGO_CONNECTION_STRING", "mongodb://localhost:27017")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "instagram")
+
+# Cấu hình Cloudinary từ file .env
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
+)
 
 # Lấy thông tin từ file .env
 USERNAME = os.getenv("INSTA_USERNAME")
@@ -27,6 +58,21 @@ MAX_USERS = int(os.getenv("MAX_USERS", 10))  # Lấy giá trị mặc định l�
 # Biến toàn cục cho thread và trạng thái hủy
 driver = None
 stop_requested = False
+
+# Kết nối tới MongoDB
+def get_database():
+    """Kết nối tới MongoDB và trả về đối tượng database."""
+    try:
+        # Kết nối tới MongoDB
+        client = MongoClient(MONGO_CONNECTION_STRING)
+
+        # Kết nối tới database (xác định bằng tên trong .env)
+        db = client[MONGO_DB_NAME]
+        print(f"Đã kết nối tới database: {MONGO_DB_NAME}")
+        return db
+    except Exception as e:
+        print(f"Lỗi khi kết nối MongoDB: {e}")
+        return None
 
 
 def save_cookies(driver, filepath="cookies.pkl"):
@@ -181,9 +227,34 @@ def scroll_and_collect(gui_progress_var, gui_progress_label):
         gui_progress_label.config(text=f"✅ Đã lưu {len(usernames)} username vào usernames.txt")
 
 # Thay thế các XPATH cũ bằng các XPATH mới được cung cấp
-def get_user_info(driver):
-    """Lấy thông tin người dùng từ trang hiện tại, bao gồm bio từ meta description."""
+# Hàm tải ảnh lên Cloudinary
+def upload_to_cloudinary(image_url):
+    """Tải ảnh lên Cloudinary và trả về link ảnh đã được lưu."""
+    try:
+        response = cloudinary.uploader.upload(image_url)
+        return response.get("url")  # Trả về URL của ảnh đã lưu trên Cloudinary
+    except Exception as e:
+        print(f"Lỗi khi tải ảnh lên Cloudinary: {e}")
+        return None
 
+def save_to_mongo(user_data):
+    """Lưu thông tin người dùng vào MongoDB."""
+    try:
+        db = get_database()
+        if db is not None:  # So sánh rõ ràng với None
+            # Truy cập collection "users"
+            users_collection = db["users"]
+            # Thêm tài liệu mới vào collection
+            result = users_collection.insert_one(user_data)
+            print(f"Đã lưu người dùng vào MongoDB với _id: {result.inserted_id}")
+        else:
+            print("Không thể lưu vào MongoDB: Database không khả dụng.")
+    except Exception as e:
+        print(f"Lỗi khi lưu vào MongoDB: {e}")
+
+def get_user_info(driver):
+    """Lấy thông tin người dùng từ trang hiện tại."""
+    
     def convert_to_number(value):
         """Chuyển chuỗi có K / M / B thành số thực."""
         value = value.strip().replace(",", "")
@@ -197,12 +268,12 @@ def get_user_info(driver):
             return int(value)
 
     try:
-        # Lấy username và fullname từ title
+        # Lấy username và fullname từ meta title
         og_title = driver.find_element(By.XPATH, "//meta[@property='og:title']").get_attribute("content")
         fullname = og_title.split("(@")[0].strip()
         username = og_title.split("(@")[1].split(")")[0].strip()
 
-        # Lấy thông tin số lượng bài post, followers và following từ description
+        # Lấy thông tin số lượng bài post, followers và following từ meta description
         og_description = driver.find_element(By.XPATH, "//meta[@property='og:description']").get_attribute("content")
         details = og_description.split("-")[0].strip()
 
@@ -214,14 +285,33 @@ def get_user_info(driver):
         bio_content = driver.find_element(By.XPATH, "//meta[@name='description']").get_attribute("content")
         bio = bio_content.split("on Instagram:")[-1].strip()  # Lấy phần sau 'on Instagram:'
 
-        return {
+        # Lấy URL ảnh đại diện từ thẻ meta[@property='og:image']
+        avatar_url = driver.find_element(By.XPATH, "//meta[@property='og:image']").get_attribute("content")
+
+        # Tải ảnh đại diện lên Cloudinary và nhận URL của ảnh
+        cloudinary_url = upload_to_cloudinary(avatar_url)
+
+        # Tạo tài liệu (document) người dùng cho MongoDB
+        user_data = {
             "username": username,
+            "email": generate_random_email(),
+            "password": generate_random_password(),
             "fullname": fullname,
+            "profile": {
+                "bio": bio,
+                "avatar": cloudinary_url or avatar_url,  # Dùng link trên Cloudinary nếu có
+                "gender": generate_random_gender()
+            },
+            "role": "user",
             "posts": posts,
             "followers": followers,
-            "following": following,
-            "bio": bio,
+            "following": following
         }
+
+        # Lưu tài liệu vào MongoDB
+        save_to_mongo(user_data)
+
+        return user_data
     except Exception as e:
         print(f"Lỗi khi lấy thông tin người dùng: {e}")
         return None
@@ -266,7 +356,7 @@ def normalize_url(url):
 
 def random_delay():
     """Hàm tạo độ trễ ngẫu nhiên trong khoảng từ 4 đến 7 giây."""
-    delay = random.uniform(1, 5)
+    delay = random.uniform(2, 5)
     time.sleep(delay)
 
 # Tạo giao diện chính với Tkinter
@@ -310,6 +400,25 @@ def main():
     # Chạy giao diện
     root.mainloop()
 
+def save_to_json_file(data, filename="user_data.json"):
+    """Thêm một mục dữ liệu vào file JSON."""
+    try:
+        # Đọc nội dung JSON hiện tại, nếu có
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as file:
+                existing_data = json.load(file)
+        else:
+            existing_data = []
+
+        # Thêm dữ liệu mới vào
+        existing_data.append(data)
+
+        # Ghi lại toàn bộ dữ liệu
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(existing_data, file, indent=4, ensure_ascii=False)
+
+    except Exception as e:
+        print(f"Lỗi khi ghi dữ liệu vào file JSON: {e}")
 
 if __name__ == "__main__":
     main()
